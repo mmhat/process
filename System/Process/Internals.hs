@@ -51,7 +51,7 @@ module System.Process.Internals (
 #endif
     ignoreSignal, defaultSignal,
 #endif
-    withFilePathException, withCEnvironment,
+    annotateIOExceptionWithOsPath, withCEnvironment,
     translate,
     createPipe,
     createPipeFd,

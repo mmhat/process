@@ -74,9 +74,11 @@ testProcessHooks =
           let pathsFile = pathToString (autogenComponentModulesDir lbi clbi) </> "Test" </> "Paths" <.> "hs"
           createDirectoryIfMissing True (takeDirectory pathsFile)
           writeFile pathsFile $ unlines
-            [ "module Test.Paths where"
-            , "processInternalExes :: [(String, FilePath)]"
-            , "processInternalExes = " ++ show (processInternalExes pd lbi)
+            [ "{-# LANGUAGE QuasiQuotes #-}"
+            , "module Test.Paths where"
+            , "import System.OsPath (OsPath, osp)"
+            , "processInternalExes :: [(String, OsPath)]"
+            , "processInternalExes = " ++ stringify (processInternalExes pd lbi)
             ]
           buildHook simpleUserHooks pd lbi userHooks buildFlags
     }
@@ -91,3 +93,12 @@ processInternalExes pd lbi =
           pathToString (buildDir lbi)
             </> (toolName </> toolName <.> exeExtension (hostPlatform lbi))
   ]
+
+stringify :: [(String, FilePath)] -> String
+stringify list = "[" ++ drop 2 (concat list') ++ "]"
+    where
+        list' :: [String]
+        list' =
+            [ ", (" ++ show toolName ++ ", [osp|" ++ toolLocation ++ "|])"
+            | (toolName, toolLocation) <- list
+            ]

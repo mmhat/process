@@ -41,11 +41,6 @@ source-repository head
     type:     git
     location: https://github.com/haskell/process.git
 
-flag os-string
-    description: Use the new os-string package
-    default: False
-    manual: False
-
 library
     default-language: Haskell2010
     other-extensions:
@@ -107,12 +102,9 @@ library
 
     ghc-options: -Wall
 
-    build-depends: base      >= 4.12.0.0 && < 4.24,
-                   directory >= 1.1 && < 1.4,
-                   deepseq   >= 1.1 && < 1.6
-
-    if flag(os-string)
-        build-depends: filepath >= 1.5.0.0 && < 1.6,
-                       os-string >= 2.0.0 && < 2.1
-    else
-        build-depends: filepath >= 1.4.100.0 && < 1.5.0.0
+    build-depends: base       >= 4.12.0.0 && < 4.24,
+                   bytestring >= 0.12.0.0 && < 0.13,
+                   directory  >= 1.1 && < 1.4,
+                   deepseq    >= 1.1 && < 1.6,
+                   filepath   >= 1.5.0.0 && < 1.6,
+                   os-string  >= 2.0.0 && < 2.1,

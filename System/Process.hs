@@ -1,10 +1,8 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
 {-# LANGUAGE LambdaCase #-}
-#if __GLASGOW_HASKELL__ >= 709
-{-# LANGUAGE Safe #-}
-#else
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE Trustworthy #-}
-#endif
 {-# LANGUAGE InterruptibleFFI #-}
 
 #include <ghcplatform.h>
@@ -140,6 +138,10 @@ import Foreign.C
 import System.Exit      ( ExitCode(..) )
 import System.IO
 import System.IO.Error (mkIOError, ioeSetErrorString)
+import System.OsPath (OsPath)
+import qualified System.OsPath as OsPath
+import System.OsString (OsString, osstr)
+import qualified System.OsString as OsString
 
 #if defined(javascript_HOST_ARCH)
 import System.Process.JavaScript(getProcessId, getCurrentProcessId)
@@ -177,7 +179,7 @@ type Pid = CPid
 -- representing a raw command with arguments.
 --
 -- See 'RawCommand' for precise semantics of the specified @FilePath@.
-proc :: FilePath -> [String] -> CreateProcess
+proc :: OsPath -> [OsString] -> CreateProcess
 proc cmd args = CreateProcess { cmdspec = RawCommand cmd args,
                                 cwd = Nothing,
                                 env = Nothing,
@@ -196,7 +198,7 @@ proc cmd args = CreateProcess { cmdspec = RawCommand cmd args,
 
 -- | Construct a 'CreateProcess' record for passing to 'createProcess',
 -- representing a command to be passed to the shell.
-shell :: String -> CreateProcess
+shell :: OsString -> CreateProcess
 shell str = CreateProcess { cmdspec = ShellCommand str,
                             cwd = Nothing,
                             env = Nothing,
@@ -354,7 +356,7 @@ cleanupProcess (mb_stdin, mb_stdout, mb_stderr,
 -- 'ProcessHandle'.
 --
 -- @since 1.2.0.0
-spawnProcess :: FilePath -> [String] -> IO ProcessHandle
+spawnProcess :: OsPath -> [OsString] -> IO ProcessHandle
 spawnProcess cmd args = do
     (_,_,_,p) <- createProcess_ "spawnProcess" (proc cmd args)
     return p
@@ -363,7 +365,7 @@ spawnProcess cmd args = do
 -- It does not wait for the program to finish, but returns the 'ProcessHandle'.
 --
 -- @since 1.2.0.0
-spawnCommand :: String -> IO ProcessHandle
+spawnCommand :: OsString -> IO ProcessHandle
 spawnCommand cmd = do
     (_,_,_,p) <- createProcess_ "spawnCommand" (shell cmd)
     return p
@@ -389,14 +391,14 @@ callCreateProcess = callCreateProcess_ "callCreateProcess"
 -- \"@'callCreateProcess' ('proc' cmd args)@\".
 --
 -- @since 1.2.0.0
-callProcess :: FilePath -> [String] -> IO ()
+callProcess :: OsPath -> [OsString] -> IO ()
 callProcess cmd = callCreateProcess_ "callProcess" . proc cmd
 
 -- | \"@callCommand cmd@\" is a shorthand for \"@'callCreateProcess'
 -- ('shell' cmd)@\".
 --
 -- @since 1.2.0.0
-callCommand :: String -> IO ()
+callCommand :: OsString -> IO ()
 callCommand = callCreateProcess_ "callCommand" . shell
 
 callCreateProcess_ :: String -> CreateProcess -> IO ()
@@ -413,12 +415,21 @@ processFailed fun = \ case
     ShellCommand cmd -> processFailedException fun cmd []
     RawCommand cmd args -> processFailedException fun cmd args
 
-processFailedException :: String -> String -> [String] -> Int -> IO a
+processFailedException :: String -> OsPath -> [OsString] -> Int -> IO a
 processFailedException fun cmd args exit_code =
-      ioError (mkIOError OtherError (fun ++ ": " ++ cmd ++
-                                     concatMap ((' ':) . show) args ++
+      ioError (mkIOError OtherError (fun ++ ": " ++ cmd' ++
+                                     args' ++
                                      " (exit " ++ show exit_code ++ ")")
                                  Nothing Nothing)
+    where
+        args' :: String
+        args' = concatMap
+            ( \arg ->
+                ' ' : fromMaybe (show arg) (OsString.decodeUtf arg)
+            ) args
+
+        cmd' :: String
+        cmd' = fromMaybe (show cmd) (OsPath.decodeUtf cmd)
 
 
 -- ----------------------------------------------------------------------------
@@ -559,8 +570,8 @@ processFailedException fun cmd args exit_code =
 -- * A string to pass on standard input to the forked process.
 --
 readProcess
-    :: FilePath                 -- ^ Filename of the executable (see 'RawCommand' for details)
-    -> [String]                 -- ^ any arguments
+    :: OsPath                   -- ^ Filename of the executable (see 'RawCommand' for details)
+    -> [OsString]               -- ^ any arguments
     -> String                   -- ^ standard input
     -> IO String                -- ^ stdout
 readProcess cmd args = readCreateProcess $ proc cmd args
@@ -628,9 +639,9 @@ readCreateProcess cp input = do
 -- when the process died as the result of a signal.
 --
 readProcessWithExitCode
-    :: FilePath                 -- ^ Filename of the executable (see 'RawCommand' for details)
-    -> [String]                 -- ^ any arguments
-    -> String                   -- ^ standard input
+    :: OsPath                      -- ^ Filename of the executable (see 'RawCommand' for details)
+    -> [OsString]                  -- ^ any arguments
+    -> String                      -- ^ standard input
     -> IO (ExitCode,String,String) -- ^ exitcode, stdout, stderr
 readProcessWithExitCode cmd args =
     readCreateProcessWithExitCode $ proc cmd args
@@ -1002,9 +1013,8 @@ foreign import ccall interruptible "waitForProcess" -- NB. safe - can block
 {- | Runs a command using the shell.
  -}
 runCommand
-  :: String
+  :: OsString
   -> IO ProcessHandle
-
 runCommand string = do
   (_,_,_,ph) <- createProcess_ "runCommand" (shell string)
   return ph
@@ -1027,15 +1037,14 @@ runCommand string = do
      'runProcess'.
 -}
 runProcess
-  :: FilePath                   -- ^ Filename of the executable (see 'RawCommand' for details)
-  -> [String]                   -- ^ Arguments to pass to the executable
-  -> Maybe FilePath             -- ^ Optional path to the working directory
-  -> Maybe [(String,String)]    -- ^ Optional environment (otherwise inherit)
-  -> Maybe Handle               -- ^ Handle to use for @stdin@ (Nothing => use existing @stdin@)
-  -> Maybe Handle               -- ^ Handle to use for @stdout@ (Nothing => use existing @stdout@)
-  -> Maybe Handle               -- ^ Handle to use for @stderr@ (Nothing => use existing @stderr@)
+  :: OsPath                       -- ^ Filename of the executable (see 'RawCommand' for details)
+  -> [OsString]                   -- ^ Arguments to pass to the executable
+  -> Maybe OsPath                 -- ^ Optional path to the working directory
+  -> Maybe [(OsString,OsString)]  -- ^ Optional environment (otherwise inherit)
+  -> Maybe Handle                 -- ^ Handle to use for @stdin@ (Nothing => use existing @stdin@)
+  -> Maybe Handle                 -- ^ Handle to use for @stdout@ (Nothing => use existing @stdout@)
+  -> Maybe Handle                 -- ^ Handle to use for @stderr@ (Nothing => use existing @stderr@)
   -> IO ProcessHandle
-
 runProcess cmd args mb_cwd mb_env mb_stdin mb_stdout mb_stderr = do
   (_,_,_,ph) <-
       createProcess_ "runProcess"
@@ -1069,9 +1078,8 @@ runProcess cmd args mb_cwd mb_env mb_stdin mb_stdout mb_stderr = do
      and @stderr@ respectively.
 -}
 runInteractiveCommand
-  :: String
+  :: OsString
   -> IO (Handle,Handle,Handle,ProcessHandle)
-
 runInteractiveCommand string =
   runInteractiveProcess1 "runInteractiveCommand" (shell string)
 
@@ -1090,12 +1098,11 @@ runInteractiveCommand string =
 >   forkIO (hPutStr inp str)
 -}
 runInteractiveProcess
-  :: FilePath                   -- ^ Filename of the executable (see 'RawCommand' for details)
-  -> [String]                   -- ^ Arguments to pass to the executable
-  -> Maybe FilePath             -- ^ Optional path to the working directory
-  -> Maybe [(String,String)]    -- ^ Optional environment (otherwise inherit)
+  :: OsPath                       -- ^ Filename of the executable (see 'RawCommand' for details)
+  -> [OsString]                   -- ^ Arguments to pass to the executable
+  -> Maybe OsPath                 -- ^ Optional path to the working directory
+  -> Maybe [(OsString,OsString)]  -- ^ Optional environment (otherwise inherit)
   -> IO (Handle,Handle,Handle,ProcessHandle)
-
 runInteractiveProcess cmd args mb_cwd mb_env = do
   runInteractiveProcess1 "runInteractiveProcess"
         (proc cmd args){ cwd = mb_cwd, env = mb_env }
@@ -1141,8 +1148,8 @@ will not work.
 On Unix systems, see 'waitForProcess' for the meaning of exit codes
 when the process died as the result of a signal.
 -}
-system :: String -> IO ExitCode
-system "" = ioException (ioeSetErrorString (mkIOError InvalidArgument "system" Nothing Nothing) "null command")
+system :: OsString -> IO ExitCode
+system [osstr||] = ioException (ioeSetErrorString (mkIOError InvalidArgument "system" Nothing Nothing) "null command")
 system str = do
   (_,_,_,p) <- createProcess_ "system" (shell str) { delegate_ctlc = True }
   waitForProcess p
@@ -1158,7 +1165,7 @@ It will therefore behave more portably between operating systems than 'system'.
 
 The return codes and possible failures are the same as for 'system'.
 -}
-rawSystem :: String -> [String] -> IO ExitCode
+rawSystem :: OsPath -> [OsString] -> IO ExitCode
 rawSystem cmd args = do
   (_,_,_,p) <- createProcess_ "rawSystem" (proc cmd args) { delegate_ctlc = True }
   waitForProcess p

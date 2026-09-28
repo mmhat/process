@@ -1,5 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE UnliftedFFITypes #-}
 
 #include <ghcplatform.h>
 
@@ -23,9 +25,12 @@ module System.Process.Posix
     , runInteractiveProcess_lock
     ) where
 
-import Control.Concurrent
-import Control.Exception
-import Data.Bits
+import Control.Concurrent (MVar, newMVar, modifyMVar_, withMVar)
+import Control.Exception (AsyncException(..), throwIO)
+import Data.Bits ((.|.))
+import Data.Coerce (coerce)
+import Data.Maybe (fromMaybe)
+import Data.Word (Word8)
 import Foreign.C
 import Foreign.Marshal
 import Foreign.Ptr
@@ -34,20 +39,35 @@ import System.IO.Unsafe
 
 import Control.Monad
 import Data.Char
-import System.IO
+import GHC.IO.Exception (IOErrorType(..))
+import System.Exit (ExitCode (..))
+import System.IO (Handle, IOMode(..))
+import System.IO.Error (mkIOError, ioeSetErrorString)
 import System.Posix.Process.Internals ( pPrPr_disableITimers, c_execvpe )
-import System.Posix.Types
+import System.Posix.Types (CUid, Fd(..), CPid(..))
 
-import System.Posix.Internals
-import GHC.IO.Exception
-import System.Posix.Signals as Sig
+import qualified Data.ByteString.Short
+import System.Posix.Internals (FD)
+import System.Posix.Signals (installHandler, sigQUIT, signalProcessGroup, sigINT, Handler(..))
 import qualified System.Posix.IO as Posix
 import System.Posix.Process (getProcessGroupIDOf)
+import System.OsPath (OsPath, osp)
+import System.OsString (OsChar, osstr)
+import System.OsString.Internal.Types (OsString(..), PosixString(..))
+import qualified System.OsString as OsString
 
 import System.Process.Common hiding (mb_delegate_ctlc)
 
 #if defined(wasm32_HOST_ARCH)
 import System.IO.Error
+#endif
+
+#if !MIN_VERSION_os_string(2,0,11)
+#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
+import System.OsString.Internal.Types (OsChar(..), WindowsChar(..))
+#else
+import System.OsString.Internal.Types (OsChar(..), PosixChar(..))
+#endif
 #endif
 
 #include "HsProcessConfig.h"
@@ -79,8 +99,8 @@ closePHANDLE _ = return ()
    Windows isn't required (or desirable) here.
 -}
 
-commandToProcess :: CmdSpec -> (FilePath, [String])
-commandToProcess (ShellCommand string) = ("/bin/sh", ["-c", string])
+commandToProcess :: CmdSpec -> (OsPath, [OsString])
+commandToProcess (ShellCommand string) = ([osp|/bin/sh|], [[osstr|-c|], string])
 commandToProcess (RawCommand cmd args) = (cmd, args)
 
 translateInternal :: String -> String
@@ -98,10 +118,10 @@ translateInternal str
 -- ----------------------------------------------------------------------------
 -- Utils
 
-withCEnvironment :: [(String,String)] -> (Ptr CString  -> IO a) -> IO a
+withCEnvironment :: [(OsString,OsString)] -> (Ptr CString  -> IO a) -> IO a
 withCEnvironment envir act =
-  let env' = map (\(name, val) -> name ++ ('=':val)) envir
-  in withMany withFilePath env' (\pEnv -> withArray0 nullPtr pEnv act)
+  let env' = map (\(name, val) -> name <> [osstr|=|] <> val) envir
+  in withMany useAsCString env' (\pEnv -> withArray0 nullPtr pEnv act)
 
 -- -----------------------------------------------------------------------------
 -- POSIX runProcess with signal handling in the child
@@ -127,17 +147,17 @@ createProcess_Internal fun
                                   child_user = mb_child_user }
  = do
   let (cmd,args) = commandToProcess cmdsp
-  withFilePathException cmd $
+  annotateIOExceptionWithOsPath cmd $
    alloca $ \ pfdStdInput  ->
    alloca $ \ pfdStdOutput ->
    alloca $ \ pfdStdError  ->
    alloca $ \ pFailedDoing ->
    maybeWith withCEnvironment mb_env $ \pEnv ->
-   maybeWith withFilePath mb_cwd $ \pWorkDir ->
+   maybeWith useAsCString mb_cwd $ \pWorkDir ->
    maybeWith with mb_child_group $ \pChildGroup ->
    maybeWith with mb_child_user $ \pChildUser ->
-   withFilePath cmd $ \cmdstr ->
-   withMany withCString args $ \argstrs -> do
+   useAsCString cmd $ \cmdstr ->
+   withMany useAsCString args $ \argstrs -> do
    let cstrs = cmdstr : argstrs
    withArray0 nullPtr cstrs $ \pargs -> do
 
@@ -213,7 +233,7 @@ runInteractiveProcess_lock = unsafePerformIO $ newMVar ()
 -- restore when the last one has finished.
 
 {-# NOINLINE runInteractiveProcess_delegate_ctlc #-}
-runInteractiveProcess_delegate_ctlc :: MVar (Maybe (Int, Sig.Handler, Sig.Handler))
+runInteractiveProcess_delegate_ctlc :: MVar (Maybe (Int, Handler, Handler))
 runInteractiveProcess_delegate_ctlc = unsafePerformIO $ newMVar Nothing
 
 startDelegateControlC :: IO ()
@@ -341,3 +361,41 @@ interruptProcessGroupOfInternal ph = do
             OpenHandle    h -> do
                 pgid <- getProcessGroupIDOf h
                 signalProcessGroup sigINT pgid
+
+useAsCString :: OsString -> (CString -> IO a) -> IO a
+useAsCString string action = do
+    checkForInteriorNuls string
+    Data.ByteString.Short.useAsCString (coerce string) action
+
+checkForInteriorNuls :: OsString -> IO ()
+checkForInteriorNuls string =
+    when (nul `elem` OsString.unpack string) (throwInternalNulError string)
+    where
+        nul :: OsChar
+        nul = fromWord' 0
+
+throwInternalNulError :: OsString -> IO a
+throwInternalNulError string =
+    ioError
+        . flip ioeSetErrorString description
+        $ mkIOError
+            InvalidArgument
+            "System.Process.OsString.checkForInteriorNuls"
+            Nothing
+            Nothing
+    where
+        description :: String
+        description =
+            "OsStrings must not contain internal NUL code units; Got " <>
+                fromMaybe (show string) (OsString.decodeUtf string)
+
+fromWord' :: Word8 -> OsChar
+#if MIN_VERSION_os_string(2,0,11)
+fromWord' = OsString.fromWord
+#else
+#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
+fromWord' = OsChar . WindowsChar . fromIntegral
+#else
+fromWord' = OsChar . PosixChar
+#endif
+#endif

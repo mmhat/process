@@ -7,7 +7,7 @@ module System.Process.Common
     , ProcessHandle(..)
     , ProcessHandle__(..)
     , ProcRetHandles (..)
-    , withFilePathException
+    , annotateIOExceptionWithOsPath
     , PHANDLE
     , GroupID
     , UserID
@@ -39,27 +39,31 @@ module System.Process.Common
 #endif
     ) where
 
-import Control.Concurrent
-import Control.Exception
+import Control.Concurrent (MVar, modifyMVar, withMVar)
+import Control.Exception (IOException, displayException, mapException)
+import Data.Maybe (fromMaybe)
 import Data.String ( IsString(..) )
-import Foreign.Ptr
+import Foreign.Ptr (Ptr)
 import Foreign.Storable ( Storable(peek) )
 
-import System.Posix.Internals
-import GHC.IO.Exception
-import GHC.IO.Encoding
+import System.Posix.Internals (FD)
+import GHC.IO.Encoding (getLocaleEncoding)
 import qualified GHC.IO.FD as FD
-import GHC.IO.Device
+import GHC.IO.Device (IODeviceType(..))
 #if defined(__IO_MANAGER_WINIO__)
 import GHC.IO.Handle.Windows
 import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle())
 #endif
-import GHC.IO.Handle.FD
-import GHC.IO.Handle.Internals
-import GHC.IO.Handle.Types hiding (ClosedHandle)
-import System.IO.Error
-import Data.Typeable
+import GHC.IO.Handle.FD (mkHandleFromFD)
+import GHC.IO.Handle.Internals (withHandle)
+import GHC.IO.Handle.Types (Handle, Handle__(..))
+import System.Exit (ExitCode)
+import System.IO.Error (ioeSetFileName, mkIOError, illegalOperationErrorType, ioeSetErrorString)
+import Data.Typeable (cast)
 import System.IO (IOMode)
+import System.OsPath (OsPath)
+import qualified System.OsPath as OsPath
+import System.OsString (OsString)
 
 #if defined(javascript_HOST_ARCH)
 import GHC.JS.Prim (JSVal)
@@ -90,46 +94,47 @@ type UserID = CGid
 #else
 type PHANDLE = CPid
 #endif
+
 data CreateProcess = CreateProcess{
-  cmdspec      :: CmdSpec,                 -- ^ Executable & arguments, or shell command.  If 'cwd' is 'Nothing', relative paths are resolved with respect to the current working directory.  If 'cwd' is provided, it is implementation-dependent whether relative paths are resolved with respect to 'cwd' or the current working directory, so absolute paths should be used to ensure portability.
-  cwd          :: Maybe FilePath,          -- ^ Optional path to the working directory for the new process
-  env          :: Maybe [(String,String)], -- ^ Optional environment (otherwise inherit from the current process)
-  std_in       :: StdStream,               -- ^ How to determine stdin
-  std_out      :: StdStream,               -- ^ How to determine stdout
-  std_err      :: StdStream,               -- ^ How to determine stderr
+  cmdspec      :: CmdSpec,                     -- ^ Executable & arguments, or shell command.  If 'cwd' is 'Nothing', relative paths are resolved with respect to the current working directory.  If 'cwd' is provided, it is implementation-dependent whether relative paths are resolved with respect to 'cwd' or the current working directory, so absolute paths should be used to ensure portability.
+  cwd          :: Maybe OsPath,                -- ^ Optional path to the working directory for the new process
+  env          :: Maybe [(OsString,OsString)], -- ^ Optional environment (otherwise inherit from the current process)
+  std_in       :: StdStream,                   -- ^ How to determine stdin
+  std_out      :: StdStream,                   -- ^ How to determine stdout
+  std_err      :: StdStream,                   -- ^ How to determine stderr
   -- XXX verify what happens with fds in nodejs child processes
-  close_fds    :: Bool,                    -- ^ Close all file descriptors except stdin, stdout and stderr in the new process (on Windows, only works if std_in, std_out, and std_err are all Inherit). This implementation will call close on every fd from 3 to the maximum of open files, which can be slow for high maximum of open files.
-  create_group :: Bool,                    -- ^ Create a new process group. On JavaScript this also creates a new session.
-  delegate_ctlc:: Bool,                    -- ^ Delegate control-C handling. Use this for interactive console processes to let them handle control-C themselves (see below for details).
-                                           --
-                                           --   @since 1.2.0.0
-  detach_console :: Bool,                  -- ^ Use the windows DETACHED_PROCESS flag when creating the process; does nothing on other platforms.
-                                           --
-                                           --   @since 1.3.0.0
-  create_new_console :: Bool,              -- ^ Use the windows CREATE_NEW_CONSOLE flag when creating the process; does nothing on other platforms.
-                                           --
-                                           --   Default: @False@
-                                           --
-                                           --   @since 1.3.0.0
-  new_session :: Bool,                     -- ^ Use posix setsid to start the new process in a new session; starts process in a new session on JavaScript; does nothing on other platforms.
-                                           --
-                                           --   @since 1.3.0.0
-  child_group :: Maybe GroupID,            -- ^ Use posix setgid to set child process's group id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
-                                           --
-                                           --   Default: @Nothing@
-                                           --
-                                           --   @since 1.4.0.0
-  child_user :: Maybe UserID,              -- ^ Use posix setuid to set child process's user id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
-                                           --
-                                           --   Default: @Nothing@
-                                           --
-                                           --   @since 1.4.0.0
-  use_process_jobs :: Bool                 -- ^ On Windows systems this flag indicates that we should wait for the entire process tree
-                                           --   to finish before unblocking. On POSIX systems this flag is ignored. See $exec-on-windows for details.
-                                           --
-                                           --   Default: @False@
-                                           --
-                                           --   @since 1.5.0.0
+  close_fds    :: Bool,                        -- ^ Close all file descriptors except stdin, stdout and stderr in the new process (on Windows, only works if std_in, std_out, and std_err are all Inherit). This implementation will call close on every fd from 3 to the maximum of open files, which can be slow for high maximum of open files.
+  create_group :: Bool,                        -- ^ Create a new process group. On JavaScript this also creates a new session.
+  delegate_ctlc:: Bool,                        -- ^ Delegate control-C handling. Use this for interactive console processes to let them handle control-C themselves (see below for details).
+                                               --
+                                               --   @since 1.2.0.0
+  detach_console :: Bool,                      -- ^ Use the windows DETACHED_PROCESS flag when creating the process; does nothing on other platforms.
+                                               --
+                                               --   @since 1.3.0.0
+  create_new_console :: Bool,                  -- ^ Use the windows CREATE_NEW_CONSOLE flag when creating the process; does nothing on other platforms.
+                                               --
+                                               --   Default: @False@
+                                               --
+                                               --   @since 1.3.0.0
+  new_session :: Bool,                         -- ^ Use posix setsid to start the new process in a new session; starts process in a new session on JavaScript; does nothing on other platforms.
+                                               --
+                                               --   @since 1.3.0.0
+  child_group :: Maybe GroupID,                -- ^ Use posix setgid to set child process's group id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
+                                               --
+                                               --   Default: @Nothing@
+                                               --
+                                               --   @since 1.4.0.0
+  child_user :: Maybe UserID,                  -- ^ Use posix setuid to set child process's user id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
+                                               --
+                                               --   Default: @Nothing@
+                                               --
+                                               --   @since 1.4.0.0
+  use_process_jobs :: Bool                     -- ^ On Windows systems this flag indicates that we should wait for the entire process tree
+                                               --   to finish before unblocking. On POSIX systems this flag is ignored. See $exec-on-windows for details.
+                                               --
+                                               --   Default: @False@
+                                               --
+                                               --   @since 1.5.0.0
  } deriving (Show, Eq)
 
 -- | contains the handles returned by a call to createProcess_Internal
@@ -141,9 +146,9 @@ data ProcRetHandles
                    }
 
 data CmdSpec
-  = ShellCommand String
+  = ShellCommand OsString
       -- ^ A command line to execute using the shell
-  | RawCommand FilePath [String]
+  | RawCommand OsPath [OsString]
       -- ^ The name of an executable with a list of arguments
       --
       -- The 'FilePath' argument names the executable, and is interpreted
@@ -180,7 +185,7 @@ data CmdSpec
 --
 -- @since 1.2.1.0
 instance IsString CmdSpec where
-  fromString = ShellCommand
+  fromString = either (error . displayException) ShellCommand . OsPath.encodeUtf
 
 data StdStream
   = Inherit                  -- ^ Inherit Handle from parent
@@ -234,10 +239,15 @@ data ProcessHandle
                   , waitpidLock      :: !(MVar ())
                   }
 
-withFilePathException :: FilePath -> IO a -> IO a
-withFilePathException fpath act = handle mapEx act
+annotateIOExceptionWithOsPath :: OsPath -> IO a -> IO a
+annotateIOExceptionWithOsPath path = mapException adjust
   where
-    mapEx ex = ioError (ioeSetFileName ex fpath)
+    adjust :: IOException -> IOException
+    adjust ioe = ioeSetFileName ioe filepath
+
+    -- TODO: This is ugly and probably wrong!
+    filepath :: FilePath
+    filepath = fromMaybe (show path) (OsPath.decodeUtf path)
 
 modifyProcessHandle
         :: ProcessHandle

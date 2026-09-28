@@ -1,5 +1,7 @@
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE OverloadedStrings #-}
+--{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE ViewPatterns #-}
 
 import Control.Exception
 import Control.Monad (guard, unless, void, when)
@@ -14,14 +16,17 @@ import Control.DeepSeq
 import Data.Char (isDigit)
 import Data.IORef
 import Data.List (isInfixOf)
-import Data.Maybe (isNothing)
-import System.IO (hClose, hFlush, openBinaryTempFile, hGetContents, hPutStr)
+import Data.Maybe (fromJust, isNothing)
+import System.IO (hClose, hFlush, hGetContents, hPutStr)
 import qualified Data.ByteString as SBS
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Char8 as S8
-import System.Directory (getTemporaryDirectory, removeFile, exeExtension)
-import System.FilePath ((<.>))
+import System.Directory.OsPath (getTemporaryDirectory, removeFile, exeExtension)
+import System.File.OsPath (openBinaryTempFile)
 import GHC.Conc.Sync (getUncaughtExceptionHandler, setUncaughtExceptionHandler)
+import System.OsPath (OsPath, (<.>), osp)
+import System.OsString (OsString, osstr)
+import qualified System.OsString as OsString
 
 #if defined(__IO_MANAGER_WINIO__)
 import GHC.IO.SubSystem ((<!>))
@@ -72,7 +77,7 @@ run label test = do
 testDoesNotExist :: IO ()
 testDoesNotExist = run "non-existent executable" $ do
     res <- handle (return . Left . isDoesNotExistError) $ do
-        (_, _, _, ph) <- createProcess (proc "definitelydoesnotexist" [])
+        (_, _, _, ph) <- createProcess (proc [osp|definitelydoesnotexist|] [])
             { close_fds = True
             }
         fmap Right $ waitForProcess ph
@@ -84,7 +89,7 @@ testModifiers :: IO ()
 testModifiers = do
     let test name modifier = run ("modifier " ++ name) $ do
             (_, _, _, ph) <- createProcess
-                $ modifier $ proc "echo" ["hello", "world"]
+                $ modifier $ proc [osp|echo|] [[osstr|hello|], [osstr|world|]]
             ec <- waitForProcess ph
             unless (ec == ExitSuccess)
                 $ error $ "echo returned: " ++ show ec
@@ -100,11 +105,11 @@ testModifiers = do
 testSubdirectories :: IO ()
 testSubdirectories = ifWindows $ run "subdirectories" $ do
     withCurrentDirectory "exes" $ do
-      res1 <- readCreateProcess (proc "./echo.bat" []) ""
+      res1 <- readCreateProcess (proc [osp|./echo.bat|] []) ""
       unless ("parent" `isInfixOf` res1 && not ("child" `isInfixOf` res1)) $ error $
         "echo.bat with cwd failed: " ++ show res1
 
-      res2 <- readCreateProcess (proc "./echo.bat" []) { cwd = Just "subdir" } ""
+      res2 <- readCreateProcess (proc [osp|./echo.bat|] []) { cwd = Just [osp|subdir|] } ""
       unless ("child" `isInfixOf` res2 && not ("parent" `isInfixOf` res2)) $ error $
         "echo.bat with cwd failed: " ++ show res2
 
@@ -112,14 +117,14 @@ testBinaryHandles :: IO ()
 testBinaryHandles = run "binary handles" $ do
     tmpDir <- getTemporaryDirectory
     bracket
-      (openBinaryTempFile tmpDir "process-binary-test.bin")
+      (openBinaryTempFile tmpDir [osp|process-binary-test.bin|])
       (\(fp, h) -> hClose h `finally` removeFile fp)
       $ \(fp, h) -> do
         let bs = S8.pack "hello\nthere\r\nworld\0"
         SBS.hPut h bs
         hClose h
 
-        (Nothing, Just out, Nothing, ph) <- createProcess (proc "cat" [fp])
+        (Nothing, Just out, Nothing, ph) <- createProcess (proc [osp|cat|] [fp])
             { std_out = CreatePipe
             }
         res' <- SBS.hGetContents out
@@ -132,7 +137,7 @@ testBinaryHandles = run "binary handles" $ do
 
 testMultithreadedWait :: IO ()
 testMultithreadedWait = run "multithreaded wait" $ do
-    (_, _, _, p) <- createProcess (proc "sleep" ["0.1"])
+    (_, _, _, p) <- createProcess (proc [osp|sleep|] [[osstr|0.1|]])
     me1 <- newEmptyMVar
     _ <- forkIO . void $ waitForProcess p >>= putMVar me1
     -- check for race / deadlock between waitForProcess and getProcessExitCode
@@ -146,7 +151,7 @@ testMultithreadedWait = run "multithreaded wait" $ do
 
 testInterruptMaskedWait :: IO ()
 testInterruptMaskedWait = run "interrupt masked wait" $ do
-    (_, _, _, p) <- createProcess (proc "sleep" ["1.0"])
+    (_, _, _, p) <- createProcess (proc [osp|sleep|] [[osstr|1.0|]])
     mec <- newEmptyMVar
     tid <- mask_ . forkIO $
         (waitForProcess p >>= putMVar mec . Just)
@@ -164,8 +169,8 @@ testGetPid :: IO ()
 testGetPid = run "getPid" $ do
     (_, Just out, _, p) <-
       if isWindows
-        then createProcess $ (proc "sh" ["-c", "z=$$; cat /proc/$z/winpid"]) {std_out = CreatePipe}
-        else createProcess $ (proc "sh" ["-c", "echo $$"]) {std_out = CreatePipe}
+        then createProcess $ (proc [osp|sh|] [[osstr|-c|], [osstr|z=$$; cat /proc/$z/winpid|]]) {std_out = CreatePipe}
+        else createProcess $ (proc [osp|sh|] [[osstr|-c|], [osstr|echo $$|]]) {std_out = CreatePipe}
     pid <- getPid p
     line <- hGetContents out
     putStrLn $ " queried PID: " ++ show pid
@@ -180,7 +185,7 @@ testGetPid = run "getPid" $ do
 
 testReadProcess :: IO ()
 testReadProcess = run "readProcess" $ do
-    output <- readProcess "echo" ["hello", "world"] ""
+    output <- readProcess [osp|echo|] [[osstr|hello|], [osstr|world|]] ""
     unless (output == "hello world\n") $
         error $ "unexpected output, got: " ++ output
 
@@ -191,13 +196,13 @@ testInterruptWith :: IO ()
 testInterruptWith = unless isWindows $ run "interrupt withCreateProcess" $ do
     mpid <- newEmptyMVar
     forkIO $ do
-        pid <- takeMVar mpid
-        void $ readProcess "kill" ["-INT", show pid] ""
+        pid <- unsafeToOsString <$> takeMVar mpid
+        void $ readProcess [osp|kill|] [[osp|-INT|], pid] ""
 
     -- collect unhandled exceptions in any threads (specifically
     -- the asynchronous 'waitForProcess' call from 'cleanupProcess')
     es <- collectExceptions $ do
-        let sleep = (proc "sleep" ["10"]) { delegate_ctlc = True }
+        let sleep = (proc [osp|sleep|] [[osp|10|]]) { delegate_ctlc = True }
         res <- try $ withCreateProcess sleep $ \_ _ _ p -> do
             Just pid <- getPid p
             putMVar mpid pid
@@ -209,6 +214,7 @@ testInterruptWith = unless isWindows $ run "interrupt withCreateProcess" $ do
         error $ "uncaught exceptions: " ++ show es
 
   where
+    collectExceptions :: IO a -> IO [SomeException]
     collectExceptions action = do
         oldHandler <- getUncaughtExceptionHandler
         flip finally (setUncaughtExceptionHandler oldHandler) $ do
@@ -221,7 +227,7 @@ testInterruptWith = unless isWindows $ run "interrupt withCreateProcess" $ do
 -- Test that we can wait without exception twice, if the process exited on its own.
 testDoubleWait :: IO ()
 testDoubleWait = run "run process, then wait twice" $ do
-    let sleep = (proc "sleep" ["0"])
+    let sleep = (proc [osp|sleep|] [[osstr|0|]])
     (_, _, _, p) <- createProcess sleep
     res <- try $ waitForProcess p
     case res of
@@ -238,16 +244,17 @@ testDoubleWait = run "run process, then wait twice" $ do
 -- Test that we can wait without exception twice, if the process was killed.
 testKillDoubleWait :: IO ()
 testKillDoubleWait = unless isWindows $ do
-    run "terminate process, then wait twice (delegate_ctlc = False)" $ runTest "TERM" False
-    run "terminate process, then wait twice (delegate_ctlc = True)" $ runTest "TERM" True
-    run "interrupt process, then wait twice (delegate_ctlc = False)" $ runTest "INT" False
-    run "interrupt process, then wait twice (delegate_ctlc = True)" $ runTest "INT" True
+    run "terminate process, then wait twice (delegate_ctlc = False)" $ runTest [osstr|TERM|] False
+    run "terminate process, then wait twice (delegate_ctlc = True)" $ runTest [osstr|TERM|] True
+    run "interrupt process, then wait twice (delegate_ctlc = False)" $ runTest [osstr|INT|] False
+    run "interrupt process, then wait twice (delegate_ctlc = True)" $ runTest [osstr|INT|] True
   where
+    runTest :: OsString -> Bool -> IO ()
     runTest sig delegate = do
-        let sleep = (proc "sleep" ["10"])
+        let sleep = (proc [osp|sleep|] [[osp|10|]])
         (_, _, _, p) <- createProcess sleep { delegate_ctlc = delegate }
-        Just pid <- getPid p
-        void $ readProcess "kill" ["-" ++ sig, show pid] ""
+        Just pid <- fmap unsafeToOsString <$> getPid p
+        void $ readProcess [osp|kill|] [[osstr|-|] <> sig, pid] ""
 
         res <- try $ waitForProcess p
         checkFirst sig delegate res
@@ -255,9 +262,9 @@ testKillDoubleWait = unless isWindows $ do
         res' <- try $ waitForProcess p
         checkSecond sig delegate res'
 
-    checkFirst :: String -> Bool -> Either SomeException ExitCode -> IO ()
+    checkFirst :: OsString -> Bool -> Either SomeException ExitCode -> IO ()
     checkFirst sig delegate res = case (sig, delegate) of
-        ("INT", True) -> case res of
+        ([osstr|INT|], True) -> case res of
             Left e -> case fromException e of
                 Just UserInterrupt -> putStrLn "result ok"
                 Nothing -> error $ "expected UserInterrupt, got  " ++ show e
@@ -267,10 +274,9 @@ testKillDoubleWait = unless isWindows $ do
             Right ExitSuccess -> error "expected failure"
             _ -> putStrLn "result ok"
 
-    checkSecond :: String -> Bool -> Either SomeException ExitCode -> IO ()
-    checkSecond sig delegate res = case (sig, delegate) of
-        ("INT", True) -> checkFirst "INT" False res
-        _ -> checkFirst sig delegate res
+    checkSecond :: OsString -> Bool -> Either SomeException ExitCode -> IO ()
+    checkSecond sig@[osstr|INT|] True res = checkFirst sig False res
+    checkSecond sig delegate res = checkFirst sig delegate res
 
 -- Test that createProcess doesn't segfault on Mac with a cwd of Nothing
 testCreateProcess :: IO ()
@@ -279,13 +285,13 @@ testCreateProcess = run "createProcess with cwd = Nothing" $ do
             { child_group = Nothing
             , child_user = Nothing
             , close_fds = False
-            , cmdspec = RawCommand "env" []
+            , cmdspec = RawCommand [osp|env|] []
             , create_group = True
             , create_new_console = False
             , cwd = Nothing
             , delegate_ctlc = False
             , detach_console = False
-            , env = Just [("PATH", "/bin:/usr/bin")]
+            , env = Just [([osstr|PATH|], [osstr|/bin:/usr/bin|])]
             , new_session = False
             , std_err = Inherit
             , std_in = Inherit
@@ -311,16 +317,18 @@ testCommunicationHandle childUsesWinIO = do
     , "parentUsesWinIO: " ++ show parentUsesWinIO
     ]
   -- Workaround for Cabal bug #9854 (cli-child executable not in PATH).
-  let cliChild =
+  let cliChild :: OsPath
+      cliChild =
         case lookup "cli-child" processInternalExes of
           Just cliChildPath -> cliChildPath
-          Nothing -> "cli-child" <.> exeExtension
+          Nothing -> [osp|cli-child|] <.> exeExtension
   (ex, output) <-
     readCreateProcessWithExitCodeCommunicationHandle
       (\(chTheyRead, chTheyWrite) ->
-        let args = [show chTheyRead, show chTheyWrite]
+        let args :: [OsString]
+            args = [unsafeToOsString chTheyRead, unsafeToOsString chTheyWrite]
                     ++ if childUsesWinIO
-                       then ["+RTS", "--io-manager=native", "-RTS"]
+                       then [[osstr|+RTS|], [osstr|--io-manager=native|], [osstr|-RTS|]]
                        else []
         in proc cliChild args)
       hGetContents
@@ -337,14 +345,14 @@ testCommunicationHandle childUsesWinIO = do
 testAddChdir :: IO ()
 testAddChdir = run "testAddChdir" $ handleIOErr $ do
   (_, _, _, commhand) <-
-      runInteractiveProcess "true" [] (Just "/no/such/dir") Nothing
+      runInteractiveProcess [osp|true|] [] (Just [osp|/no/such/dir|]) Nothing
   exitCode <- waitForProcess commhand
   print exitCode
   where handleIOErr a = a `catchIOError` \e -> putStrLn ("Exc: " ++ show (ioeGetErrorType e))
 
 testAddChdir2 :: IO ()
 testAddChdir2 = run "testAddChdir2" $ handleIOErr $ do
-  commhand <- runProcess "true" [] (Just "/no/such/dir") Nothing
+  commhand <- runProcess [osp|true|] [] (Just [osp|/no/such/dir|]) Nothing
                 Nothing Nothing Nothing
   exitCode <- waitForProcess commhand
   print exitCode
@@ -360,3 +368,6 @@ withCurrentDirectory new inner = do
 
 catchThreadKilled :: IO a -> IO a -> IO a
 catchThreadKilled f g = catchJust (\e -> guard (e == ThreadKilled)) f (\() -> g)
+
+unsafeToOsString :: Show a => a -> OsString
+unsafeToOsString = fromJust . OsString.encodeUtf . show
