@@ -77,7 +77,7 @@ import System.Process.JavaScript
 #elif defined(mingw32_HOST_OS)
 import System.Process.Windows
 #else
-import System.Process.Posix
+import System.Process.Posix.String
 #endif
 
 -- ----------------------------------------------------------------------------
