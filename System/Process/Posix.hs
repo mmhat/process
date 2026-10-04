@@ -44,7 +44,7 @@ import System.Posix.Signals as Sig
 import qualified System.Posix.IO as Posix
 import System.Posix.Process (getProcessGroupIDOf)
 
-import System.Process.Common hiding (mb_delegate_ctlc)
+import System.Process.Common.String hiding (mb_delegate_ctlc)
 
 #if defined(wasm32_HOST_ARCH)
 import System.IO.Error

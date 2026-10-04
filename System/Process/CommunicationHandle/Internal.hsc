@@ -35,7 +35,7 @@ import GHC.IO.Windows.Handle (Io, NativeHandle, fromHANDLE)
 import GHC.Event.Windows (associateHandle')
 import System.Process.Windows (rawHANDLEToHandle)
 ##  else
-import System.Process.Common (rawFdToHandle)
+import System.Process.Common.String (rawFdToHandle)
 ##  endif
 
 #include <fcntl.h>     /* for _O_BINARY */

@@ -70,7 +70,7 @@ import GHC.IO.Exception ( IOErrorType(..), IOException(..) )
 import GHC.IO.Handle.FD (fdToHandle)
 import System.Posix.Internals (FD)
 
-import System.Process.Common
+import System.Process.Common.String
 
 #if defined(javascript_HOST_ARCH)
 import System.Process.JavaScript

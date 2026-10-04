@@ -25,38 +25,34 @@ module System.Process.Windows
 ##endif
     ) where
 
-import System.Process.Common
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Data.Bits
+import Control.Concurrent ()
+import Control.Exception ()
+import Control.Monad ()
+import Data.Bits ()
 import Data.Char (toLower)
 import Data.List (dropWhileEnd)
-import Foreign.C
-import Foreign.Marshal
-import Foreign.Ptr
-import Foreign.Storable
-import System.IO.Unsafe
+import Foreign ()
+import Foreign.C ()
+import System.IO.Unsafe (unsafePerformIO)
 
-import System.Posix.Internals ()
-import GHC.IO.Exception ()
-import GHC.IO.Handle.FD ()
-import GHC.IO.Handle.Types ()
-import System.IO.Error ()
-import System.IO (IOMode(..))
+import System.Posix.Internals (FD)
+import GHC.IO.Handle.FD (fdToHandle)
+import System.Exit (ExitCode)
+import System.IO.Error (doesNotExistErrorType, isDoesNotExistError, mkIOError)
+import System.IO (Handle, IOMode(ReadMode, WriteMode))
 
-import System.Directory         ( doesFileExist )
-import System.Environment       ( getEnv )
-import System.FilePath
+import System.Directory ( doesFileExist )
+import System.Environment ( getEnv )
+import System.FilePath ()
 import System.Win32.Console (generateConsoleCtrlEvent, cTRL_BREAK_EVENT)
 import System.Win32.Process (getProcessId)
 
 ##if defined(__IO_MANAGER_WINIO__)
-import GHC.IO.Device (IODeviceType(..))
+import GHC.IO.Device (IODeviceType(Stream))
 import GHC.IO.Encoding (getLocaleEncoding)
 import GHC.IO.Handle.Windows (handleToHANDLE, mkHandleFromHANDLE)
 import GHC.IO.SubSystem ((<!>))
-import qualified GHC.Event.Windows as Mgr
+import qualified GHC.Event.Windows as Manager
 import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle())
 import Graphics.Win32.Misc
   ( getStdHandle
@@ -66,6 +62,8 @@ import Graphics.Win32.Misc
   )
 import System.Win32.Types (HANDLE)
 ##endif
+
+import System.Process.Common.String
 
 -- The double hash is used so that hsc does not process this include file
 ##include "processFlags.h"
@@ -268,9 +266,9 @@ createProcess_Internal_winio fun def@CreateProcess{
 
      -- Attach the handle to the I/O manager's CompletionPort.  This allows the
      -- I/O manager to service requests for this Handle.
-     Mgr.associateHandle' =<< peek pfdStdInput
-     Mgr.associateHandle' =<< peek pfdStdOutput
-     Mgr.associateHandle' =<< peek pfdStdError
+     Manager.associateHandle' =<< peek pfdStdInput
+     Manager.associateHandle' =<< peek pfdStdOutput
+     Manager.associateHandle' =<< peek pfdStdError
 
      -- Create the haskell mode handles as files.
      hndStdInput  <- mbPipeHANDLE mb_stdin  pfdStdInput  WriteMode
