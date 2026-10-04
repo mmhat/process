@@ -33,7 +33,7 @@ import GHC.IO.Handle.Windows (mkHandleFromHANDLE)
 import GHC.IO.SubSystem ((<!>))
 import GHC.IO.Windows.Handle (Io, NativeHandle, fromHANDLE)
 import GHC.Event.Windows (associateHandle')
-import System.Process.Common (rawHANDLEToHandle)
+import System.Process.Windows (rawHANDLEToHandle)
 ##  else
 import System.Process.Common (rawFdToHandle)
 ##  endif

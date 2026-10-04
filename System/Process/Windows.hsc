@@ -20,6 +20,9 @@ module System.Process.Windows
     , timeout_Infinite
     , HANDLE
     , mkNamedPipe
+##if defined(__IO_MANAGER_WINIO__)
+    , rawHANDLEToHandle
+##endif
     ) where
 
 import System.Process.Common
@@ -35,16 +38,11 @@ import Foreign.Ptr
 import Foreign.Storable
 import System.IO.Unsafe
 
-import System.Posix.Internals
-import GHC.IO.Exception
-##if defined(__IO_MANAGER_WINIO__)
-import GHC.IO.SubSystem
-import qualified GHC.Event.Windows as Mgr
-import Graphics.Win32.Misc
-##endif
-import GHC.IO.Handle.FD
-import GHC.IO.Handle.Types hiding (ClosedHandle)
-import System.IO.Error
+import System.Posix.Internals ()
+import GHC.IO.Exception ()
+import GHC.IO.Handle.FD ()
+import GHC.IO.Handle.Types ()
+import System.IO.Error ()
 import System.IO (IOMode(..))
 
 import System.Directory         ( doesFileExist )
@@ -52,6 +50,22 @@ import System.Environment       ( getEnv )
 import System.FilePath
 import System.Win32.Console (generateConsoleCtrlEvent, cTRL_BREAK_EVENT)
 import System.Win32.Process (getProcessId)
+
+##if defined(__IO_MANAGER_WINIO__)
+import GHC.IO.Device (IODeviceType(..))
+import GHC.IO.Encoding (getLocaleEncoding)
+import GHC.IO.Handle.Windows (handleToHANDLE, mkHandleFromHANDLE)
+import GHC.IO.SubSystem ((<!>))
+import qualified GHC.Event.Windows as Mgr
+import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle())
+import Graphics.Win32.Misc
+  ( getStdHandle
+  , sTD_ERROR_HANDLE
+  , sTD_INPUT_HANDLE
+  , sTD_OUTPUT_HANDLE
+  )
+import System.Win32.Types (HANDLE)
+##endif
 
 -- The double hash is used so that hsc does not process this include file
 ##include "processFlags.h"
@@ -601,3 +615,33 @@ interruptProcessGroupOfInternal ph = do
                     signalProcessGroup sigINT pgid
 #endif
                     return ()
+
+##if !defined(__IO_MANAGER_WINIO__)
+type HANDLE = Ptr ()
+##endif
+
+##if defined(__IO_MANAGER_WINIO__)
+-- It is not completely safe to pass the values -1 and -2 as HANDLE as it's an
+-- unsigned type. -1 additionally is also the value for INVALID_HANDLE.  However
+-- it should be safe in this case since an invalid handle would be an error here
+-- anyway and the chances of us getting a handle with a value of -2 is
+-- astronomical. However, sometime in the future process should really use a
+-- proper structure here.
+mbHANDLE :: HANDLE -> StdStream -> IO HANDLE
+mbHANDLE _std CreatePipe      = return $ intPtrToPtr (-1)
+mbHANDLE  std Inherit         = return std
+mbHANDLE _std NoStream        = return $ intPtrToPtr (-2)
+mbHANDLE _std (UseHandle hdl) = handleToHANDLE hdl
+
+mbPipeHANDLE :: StdStream -> Ptr HANDLE -> IOMode -> IO (Maybe Handle)
+mbPipeHANDLE CreatePipe pfd mode =
+  Just <$> ( ( \ hANDLE -> rawHANDLEToHandle hANDLE mode ) =<< peek pfd )
+mbPipeHANDLE _std      _pfd _mode = return Nothing
+
+rawHANDLEToHandle :: HANDLE -> IOMode-> IO Handle
+rawHANDLEToHandle raw_handle mode  = do
+  let hwnd  = fromHANDLE raw_handle :: Io NativeHandle
+      ident = "hwnd:" ++ show raw_handle
+  enc <- getLocaleEncoding
+  mkHandleFromHANDLE hwnd Stream ident mode (Just enc)
+##endif

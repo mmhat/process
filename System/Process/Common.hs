@@ -11,7 +11,6 @@ module System.Process.Common
     , PHANDLE
     , GroupID
     , UserID
-    , modifyProcessHandle
     , withProcessHandle
     , fd_stdin
     , fd_stdout
@@ -27,38 +26,29 @@ module System.Process.Common
 #else
     , CGid
 #endif
-
-#if defined(mingw32_HOST_OS)
-    , HANDLE
--- WINIO is only available on GHC 9.0 and up.
-#  if defined(__IO_MANAGER_WINIO__)
-    , mbHANDLE
-    , mbPipeHANDLE
-    , rawHANDLEToHandle
-#  endif
-#endif
     ) where
 
-import Control.Concurrent
-import Control.Exception
+import Control.Concurrent (MVar, withMVar)
+import Control.Exception (handle)
 import Data.String ( IsString(..) )
-import Foreign.Ptr
+import Foreign.Ptr (Ptr)
 import Foreign.Storable ( Storable(peek) )
 
-import System.Posix.Internals
-import GHC.IO.Exception
-import GHC.IO.Encoding
+import GHC.IO.Encoding (getLocaleEncoding)
 import qualified GHC.IO.FD as FD
-import GHC.IO.Device
-#if defined(__IO_MANAGER_WINIO__)
-import GHC.IO.Handle.Windows
-import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle())
-#endif
-import GHC.IO.Handle.FD
-import GHC.IO.Handle.Internals
-import GHC.IO.Handle.Types hiding (ClosedHandle)
+import GHC.IO.Device (IODeviceType(..))
+import GHC.IO.Handle.FD (mkHandleFromFD)
+import GHC.IO.Handle.Internals (withHandle)
+import GHC.IO.Handle.Types (Handle, Handle__(..))
+import System.Posix.Internals (FD)
+import System.Exit (ExitCode)
 import System.IO.Error
-import Data.Typeable
+  ( ioeSetFileName
+  , mkIOError
+  , illegalOperationErrorType
+  , ioeSetErrorString
+  )
+import Data.Typeable (cast)
 import System.IO (IOMode)
 
 #if defined(javascript_HOST_ARCH)
@@ -70,11 +60,8 @@ import GHC.JS.Prim (JSVal)
 #if defined(mingw32_HOST_OS)
 import Data.Word (Word32)
 import System.Win32.DebugApi (PHANDLE)
-#if defined(__IO_MANAGER_WINIO__)
-import System.Win32.Types (HANDLE)
-#endif
 #else
-import System.Posix.Types
+import System.Posix.Types (CGid, CPid, GroupID, UserID)
 #endif
 
 #if defined(javascript_HOST_ARCH)
@@ -90,6 +77,7 @@ type UserID = CGid
 #else
 type PHANDLE = CPid
 #endif
+
 data CreateProcess = CreateProcess{
   cmdspec      :: CmdSpec,                 -- ^ Executable & arguments, or shell command.  If 'cwd' is 'Nothing', relative paths are resolved with respect to the current working directory.  If 'cwd' is provided, it is implementation-dependent whether relative paths are resolved with respect to 'cwd' or the current working directory, so absolute paths should be used to ensure portability.
   cwd          :: Maybe FilePath,          -- ^ Optional path to the working directory for the new process
@@ -239,12 +227,6 @@ withFilePathException fpath act = handle mapEx act
   where
     mapEx ex = ioError (ioeSetFileName ex fpath)
 
-modifyProcessHandle
-        :: ProcessHandle
-        -> (ProcessHandle__ -> IO (ProcessHandle__, a))
-        -> IO a
-modifyProcessHandle (ProcessHandle m _ _) io = modifyMVar m io
-
 withProcessHandle
         :: ProcessHandle
         -> (ProcessHandle__ -> IO a)
@@ -294,40 +276,5 @@ rawFdToHandle fd mode = do
                        False {-is_socket-}
                        False {-non-blocking-}
   fD' <- FD.setNonBlockingMode fD True -- see #3316
-#if __GLASGOW_HASKELL__ >= 704
   enc <- getLocaleEncoding
-#else
-  let enc = localeEncoding
-#endif
   mkHandleFromFD fD' fd_type filepath mode False {-is_socket-} (Just enc)
-
-
-#if defined(mingw32_HOST_OS) && !defined(__IO_MANAGER_WINIO__)
-type HANDLE = Ptr ()
-#endif
-
-#if defined(__IO_MANAGER_WINIO__)
--- It is not completely safe to pass the values -1 and -2 as HANDLE as it's an
--- unsigned type. -1 additionally is also the value for INVALID_HANDLE.  However
--- it should be safe in this case since an invalid handle would be an error here
--- anyway and the chances of us getting a handle with a value of -2 is
--- astronomical. However, sometime in the future process should really use a
--- proper structure here.
-mbHANDLE :: HANDLE -> StdStream -> IO HANDLE
-mbHANDLE _std CreatePipe      = return $ intPtrToPtr (-1)
-mbHANDLE  std Inherit         = return std
-mbHANDLE _std NoStream        = return $ intPtrToPtr (-2)
-mbHANDLE _std (UseHandle hdl) = handleToHANDLE hdl
-
-mbPipeHANDLE :: StdStream -> Ptr HANDLE -> IOMode -> IO (Maybe Handle)
-mbPipeHANDLE CreatePipe pfd mode =
-  Just <$> ( ( \ hANDLE -> rawHANDLEToHandle hANDLE mode ) =<< peek pfd )
-mbPipeHANDLE _std      _pfd _mode = return Nothing
-
-rawHANDLEToHandle :: HANDLE -> IOMode-> IO Handle
-rawHANDLEToHandle raw_handle mode  = do
-  let hwnd  = fromHANDLE raw_handle :: Io NativeHandle
-      ident = "hwnd:" ++ show raw_handle
-  enc <- getLocaleEncoding
-  mkHandleFromHANDLE hwnd Stream ident mode (Just enc)
-#endif

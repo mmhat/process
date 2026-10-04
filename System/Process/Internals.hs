@@ -275,3 +275,9 @@ ignoreSigPipe = C.handle $ \e -> case e of
                                            , ioe_errno = Just ioe }
                                      | Errno ioe == ePIPE -> return ()
                                    _ -> throwIO e
+
+modifyProcessHandle
+        :: ProcessHandle
+        -> (ProcessHandle__ -> IO (ProcessHandle__, a))
+        -> IO a
+modifyProcessHandle (ProcessHandle m _ _) io = modifyMVar m io
