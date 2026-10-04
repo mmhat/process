@@ -25,14 +25,37 @@ module System.Process.Windows
 ##endif
     ) where
 
-import Control.Concurrent ()
-import Control.Exception ()
-import Control.Monad ()
-import Data.Bits ()
+import Control.Concurrent (MVar, mkWeakMVar, modifyMVar_, newMVar, withMVar)
+import Control.Exception (catchJust, onException)
+import Control.Monad (when)
+import Data.Bits ((.|.))
 import Data.Char (toLower)
 import Data.List (dropWhileEnd)
-import Foreign ()
-import Foreign.C ()
+import Foreign
+  ( Ptr
+  , Storable
+  , WordPtr
+  , alloca
+  , allocaArray
+  , allocaBytes
+  , castPtr
+  , intPtrToPtr
+  , maybeWith
+  , nullPtr
+  , peek
+  , peekElemOff
+  , sizeOf
+  )
+import Foreign.C
+  ( CInt(CInt)
+  , CUInt(CUInt)
+  , CLong
+  , CWString
+  , throwErrnoIf_
+  , throwErrnoIfMinus1_
+  , throwErrnoIfNull
+  , withCWString
+  )
 import System.IO.Unsafe (unsafePerformIO)
 
 import System.Posix.Internals (FD)
@@ -41,9 +64,9 @@ import System.Exit (ExitCode)
 import System.IO.Error (doesNotExistErrorType, isDoesNotExistError, mkIOError)
 import System.IO (Handle, IOMode(ReadMode, WriteMode))
 
-import System.Directory ( doesFileExist )
-import System.Environment ( getEnv )
-import System.FilePath ()
+import System.Directory (doesFileExist)
+import System.Environment (getEnv)
+import System.FilePath ((</>), splitSearchPath, takeExtension)
 import System.Win32.Console (generateConsoleCtrlEvent, cTRL_BREAK_EVENT)
 import System.Win32.Process (getProcessId)
 
