@@ -31,6 +31,7 @@ extra-source-files:
     exes/subdir/echo.bat
     cbits/posix/common.h
     System/Process/Common/Include.hs
+    System/Process/Internals/Include.hs
     System/Process/Posix/Include.hs
     System/Process/Windows/Include.hs
 
@@ -69,6 +70,13 @@ library
     other-modules:
         System.Process.Common.OsString
         System.Process.Common.String
+        System.Process.Internals.String
+        System.Process.String
+
+    if !arch(javascript)
+        exposed-modules:
+            System.Process.Internals.OsString
+            System.Process.OsString
 
     if os(windows)
         c-sources:
