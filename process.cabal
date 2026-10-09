@@ -32,6 +32,7 @@ extra-source-files:
     cbits/posix/common.h
     System/Process/Common/Include.hs
     System/Process/Posix/Include.hs
+    System/Process/Windows/Include.hs
 
 extra-tmp-files:
     autom4te.cache
@@ -72,7 +73,10 @@ library
     if os(windows)
         c-sources:
             cbits/win32/runProcess.c
-        other-modules: System.Process.Windows
+        other-modules:
+            System.Process.Windows.OsString
+            System.Process.Windows.OsString.Compat
+            System.Process.Windows.String
         build-depends: Win32 >= 2.14.1.0 && < 2.15
         -- ole32 and rpcrt4 are needed to create GUIDs for unique named pipes
         -- for process.

@@ -75,7 +75,7 @@ import System.Process.Common.String
 #if defined(javascript_HOST_ARCH)
 import System.Process.JavaScript
 #elif defined(mingw32_HOST_OS)
-import System.Process.Windows
+import System.Process.Windows.String
 #else
 import System.Process.Posix.String
 #endif
